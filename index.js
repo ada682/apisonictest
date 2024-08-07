@@ -4,7 +4,6 @@ const solana = require('@solana/web3.js');
 const axios = require('axios').default;
 const base58 = require('bs58');
 const nacl = require('tweetnacl');
-const moment = require('moment');
 
 const {
   sendSol,
@@ -73,13 +72,13 @@ async function sonicOdysseyOperations(privateKey) {
   console.log(colors.green(`Ring Balance: ${profile.ring}`));
   console.log(colors.green(`Available Boxes: ${profile.ring_monitor}`));
 
-  // Perform daily claim
-  await dailyClaim(token);
+  // 1. Perform daily check-in
+  await dailyCheckIn(token, keypair);
 
-  // Perform daily login
-  await dailyLogin(token, keypair);
+  // 2. Claim transaction milestone rewards
+  await claimTransactionMilestones(token);
 
-  // Open all available mystery boxes
+  // 3. Open all available mystery boxes
   const availableBoxes = profile.ring_monitor;
   for (let i = 0; i < availableBoxes; i++) {
     await openMysteryBox(token, keypair);
@@ -133,10 +132,83 @@ async function getProfile(token) {
   }
 }
 
-async function dailyClaim(token) {
-  // Implementation from claim.js
-  console.log(colors.yellow('Performing daily claim...'));
-  // Add your daily claim logic here
+async function dailyCheckIn(token, keypair) {
+  try {
+    console.log(colors.yellow('Performing daily check-in...'));
+    const { data } = await axios({
+      url: 'https://odyssey-api-beta.sonic.game/user/check-in/transaction',
+      method: 'GET',
+      headers: { ...HEADERS, Authorization: token },
+    });
+
+    const txBuffer = Buffer.from(data.data.hash, 'base64');
+    const tx = solana.Transaction.from(txBuffer);
+    tx.partialSign(keypair);
+    const signature = await connection.sendRawTransaction(tx.serialize());
+    await connection.confirmTransaction(signature);
+
+    const response = await axios({
+      url: 'https://odyssey-api-beta.sonic.game/user/check-in',
+      method: 'POST',
+      headers: { ...HEADERS, Authorization: token },
+      data: { hash: signature },
+    });
+
+    console.log(colors.green(`Daily check-in successful! Accumulative days: ${response.data.data.accumulative_days}`));
+  } catch (error) {
+    console.log(`Error in daily check-in: ${error.message}`.red);
+  }
+}
+
+async function claimTransactionMilestones(token) {
+  console.log(colors.yellow('Claiming transaction milestone rewards...'));
+  const milestones = [10, 30, 50]; // Assuming these are the transaction milestones
+  
+  try {
+    const transactionCount = await fetchDailyTransactions(token);
+    console.log(colors.blue(`Total daily transactions: ${transactionCount}`));
+
+    for (const milestone of milestones) {
+      if (transactionCount >= milestone) {
+        try {
+          const response = await axios({
+            url: 'https://odyssey-api.sonic.game/user/transactions/rewards/claim',
+            method: 'POST',
+            headers: { ...HEADERS, Authorization: token },
+            data: { stage: milestones.indexOf(milestone) + 1 },
+          });
+
+          console.log(colors.green(`Successfully claimed reward for ${milestone} transactions milestone`));
+        } catch (error) {
+          if (error.response && error.response.data.message === 'already claimed') {
+            console.log(colors.cyan(`Reward for ${milestone} transactions milestone already claimed`));
+          } else {
+            console.log(colors.red(`Failed to claim reward for ${milestone} transactions milestone: ${error.message}`));
+          }
+        }
+      } else {
+        console.log(colors.yellow(`Not enough transactions to claim ${milestone} milestone reward`));
+        break; // No need to check further milestones
+      }
+      await delay(1000); // Wait 1 second between claims
+    }
+  } catch (error) {
+    console.log(colors.red(`Error in claiming transaction milestone rewards: ${error.message}`));
+  }
+}
+
+async function fetchDailyTransactions(token) {
+  try {
+    const { data } = await axios({
+      url: 'https://odyssey-api-beta.sonic.game/user/transactions/state/daily',
+      method: 'GET',
+      headers: { ...HEADERS, Authorization: token },
+    });
+    return data.data.total_transactions;
+  } catch (error) {
+    console.log(colors.red(`Error fetching daily transactions: ${error.message}`));
+    return 0;
+  }
 }
 
 async function openMysteryBox(token, keypair) {
@@ -164,34 +236,6 @@ async function openMysteryBox(token, keypair) {
     console.log(colors.green(`Mystery box opened successfully! Amount: ${response.data.data.amount}`));
   } catch (error) {
     console.log(`Error opening mystery box: ${error}`.red);
-  }
-}
-
-async function dailyLogin(token, keypair) {
-  try {
-    console.log(colors.yellow('Performing daily login...'));
-    const { data } = await axios({
-      url: 'https://odyssey-api-beta.sonic.game/user/check-in/transaction',
-      method: 'GET',
-      headers: { ...HEADERS, Authorization: token },
-    });
-
-    const txBuffer = Buffer.from(data.data.hash, 'base64');
-    const tx = solana.Transaction.from(txBuffer);
-    tx.partialSign(keypair);
-    const signature = await connection.sendRawTransaction(tx.serialize());
-    await connection.confirmTransaction(signature);
-
-    const response = await axios({
-      url: 'https://odyssey-api-beta.sonic.game/user/check-in',
-      method: 'POST',
-      headers: { ...HEADERS, Authorization: token },
-      data: { hash: signature },
-    });
-
-    console.log(colors.green(`Daily login successful! Accumulative days: ${response.data.data.accumulative_days}`));
-  } catch (error) {
-    console.log(`Error in daily login: ${error}`.red);
   }
 }
 
