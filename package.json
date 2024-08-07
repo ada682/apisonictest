@@ -1,16 +1,11 @@
 {
   "name": "sonic-odyssey-bot",
   "version": "1.0.0",
-  "description": "Sonic Odyssey Bot is an application for sending SOL (Solana) cryptocurrency transactions using seed phrases or private keys to random addresses.",
+  "description": "Sonic Odyssey Bot for SOL transactions and game operations",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "node index.js",
-    "claim": "node claim.js"
+    "start": "node index.js"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
   "dependencies": {
     "@solana/web3.js": "^1.93.0",
     "axios": "^1.7.2",
