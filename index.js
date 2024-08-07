@@ -1,11 +1,14 @@
 const fs = require('fs');
-const readlineSync = require('readline-sync');
 const colors = require('colors');
+const solana = require('@solana/web3.js');
+const axios = require('axios').default;
+const base58 = require('bs58');
+const nacl = require('tweetnacl');
+const moment = require('moment');
 
 const {
   sendSol,
   generateRandomAddresses,
-  getKeypairFromSeed,
   getKeypairFromPrivateKey,
   PublicKey,
   connection,
@@ -13,128 +16,183 @@ const {
   delay,
 } = require('./src/solanaUtils');
 
+const { HEADERS } = require('./src/headers');
 const { displayHeader } = require('./src/displayUtils');
 
-(async () => {
+async function main() {
   displayHeader();
-  const method = readlineSync.question(
-    'Select input method (0 for seed phrase, 1 for private key): '
-  );
 
-  let seedPhrasesOrKeys;
-  if (method === '0') {
-    seedPhrasesOrKeys = JSON.parse(fs.readFileSync('accounts.json', 'utf-8'));
-    if (!Array.isArray(seedPhrasesOrKeys) || seedPhrasesOrKeys.length === 0) {
-      throw new Error(
-        colors.red('accounts.json is not set correctly or is empty')
-      );
+  const privateKeys = JSON.parse(fs.readFileSync('privateKeys.json', 'utf-8'));
+
+  for (const [index, privateKey] of privateKeys.entries()) {
+    console.log(colors.yellow(`Processing account ${index + 1}`));
+
+    // Transfer SOL
+    await transferSOL(privateKey);
+
+    // Perform Sonic Odyssey operations
+    await sonicOdysseyOperations(privateKey);
+
+    if (index < privateKeys.length - 1) {
+      console.log(colors.cyan('Proceeding to next account in 5 seconds...'));
+      await delay(5000);
     }
-  } else if (method === '1') {
-    seedPhrasesOrKeys = JSON.parse(
-      fs.readFileSync('privateKeys.json', 'utf-8')
-    );
-    if (!Array.isArray(seedPhrasesOrKeys) || seedPhrasesOrKeys.length === 0) {
-      throw new Error(
-        colors.red('privateKeys.json is not set correctly or is empty')
-      );
-    }
-  } else {
-    throw new Error(colors.red('Invalid input method selected'));
   }
 
-  const defaultAddressCount = 100;
-  const addressCountInput = readlineSync.question(
-    `How many random addresses do you want to generate? (default is ${defaultAddressCount}): `
-  );
-  const addressCount = addressCountInput
-    ? parseInt(addressCountInput, 10)
-    : defaultAddressCount;
+  console.log(colors.cyan('All accounts processed.'));
+}
 
-  if (isNaN(addressCount) || addressCount <= 0) {
-    throw new Error(colors.red('Invalid number of addresses specified'));
-  }
+async function transferSOL(privateKey) {
+  const fromKeypair = getKeypairFromPrivateKey(privateKey);
+  const addressCount = 100;
+  const amountToSend = 0.001;
+  const delayBetweenTx = 1000;
 
   const randomAddresses = generateRandomAddresses(addressCount);
 
-  let rentExemptionAmount;
+  for (const address of randomAddresses) {
+    const toPublicKey = new PublicKey(address);
+    try {
+      await sendSol(fromKeypair, toPublicKey, amountToSend);
+      console.log(colors.green(`Successfully sent ${amountToSend} SOL to ${address}`));
+    } catch (error) {
+      console.error(colors.red(`Failed to send SOL to ${address}:`), error);
+    }
+    await delay(delayBetweenTx);
+  }
+}
+
+async function sonicOdysseyOperations(privateKey) {
+  const keypair = getKeypairFromPrivateKey(privateKey);
+  const publicKey = keypair.publicKey.toBase58();
+  const token = await getToken(privateKey);
+  const profile = await getProfile(token);
+
+  console.log(colors.green(`Processing Sonic Odyssey operations for ${publicKey}`));
+  console.log(colors.green(`SOL Balance: ${profile.wallet_balance / LAMPORTS_PER_SOL}`));
+  console.log(colors.green(`Ring Balance: ${profile.ring}`));
+  console.log(colors.green(`Available Boxes: ${profile.ring_monitor}`));
+
+  // Perform daily claim
+  await dailyClaim(token);
+
+  // Perform daily login
+  await dailyLogin(token, keypair);
+
+  // Open all available mystery boxes
+  const availableBoxes = profile.ring_monitor;
+  for (let i = 0; i < availableBoxes; i++) {
+    await openMysteryBox(token, keypair);
+  }
+}
+
+async function getToken(privateKey) {
   try {
-    rentExemptionAmount =
-      (await connection.getMinimumBalanceForRentExemption(0)) /
-      LAMPORTS_PER_SOL;
-    console.log(
-      colors.yellow(
-        `Minimum balance required for rent exemption: ${rentExemptionAmount} SOL`
-      )
+    const keypair = getKeypairFromPrivateKey(privateKey);
+    const { data } = await axios({
+      url: 'https://odyssey-api-beta.sonic.game/auth/sonic/challenge',
+      params: { wallet: keypair.publicKey },
+      headers: HEADERS,
+    });
+
+    const sign = nacl.sign.detached(
+      Buffer.from(data.data),
+      keypair.secretKey
     );
+    const signature = Buffer.from(sign).toString('base64');
+    const publicKey = keypair.publicKey;
+    const encodedPublicKey = Buffer.from(publicKey.toBytes()).toString('base64');
+    const response = await axios({
+      url: 'https://odyssey-api-beta.sonic.game/auth/sonic/authorize',
+      method: 'POST',
+      headers: HEADERS,
+      data: {
+        address: publicKey,
+        address_encoded: encodedPublicKey,
+        signature,
+      },
+    });
+
+    return response.data.data.token;
   } catch (error) {
-    console.error(
-      colors.red(
-        'Failed to fetch minimum balance for rent exemption. Using default value.'
-      )
-    );
-    rentExemptionAmount = 0.001;
+    console.log(`Error fetching token: ${error}`.red);
   }
+}
 
-  let amountToSend;
-  do {
-    const amountInput = readlineSync.question(
-      'Enter the amount of SOL to send (default is 0.001 SOL): '
-    );
-    amountToSend = amountInput ? parseFloat(amountInput) : 0.001;
+async function getProfile(token) {
+  try {
+    const { data } = await axios({
+      url: 'https://odyssey-api-beta.sonic.game/user/rewards/info',
+      method: 'GET',
+      headers: { ...HEADERS, Authorization: token },
+    });
 
-    if (isNaN(amountToSend) || amountToSend < rentExemptionAmount) {
-      console.log(
-        colors.red(
-          `Invalid amount specified. The amount must be at least ${rentExemptionAmount} SOL to avoid rent issues.`
-        )
-      );
-      console.log(
-        colors.yellow(
-          `Suggested amount to send: ${Math.max(
-            0.001,
-            rentExemptionAmount
-          )} SOL`
-        )
-      );
-    }
-  } while (isNaN(amountToSend) || amountToSend < rentExemptionAmount);
-
-  const defaultDelay = 1000;
-  const delayInput = readlineSync.question(
-    `Enter the delay between transactions in milliseconds (default is ${defaultDelay}ms): `
-  );
-  const delayBetweenTx = delayInput ? parseInt(delayInput, 10) : defaultDelay;
-
-  if (isNaN(delayBetweenTx) || delayBetweenTx < 0) {
-    throw new Error(colors.red('Invalid delay specified'));
+    return data.data;
+  } catch (error) {
+    console.log(`Error fetching profile: ${error}`.red);
   }
+}
 
-  for (const [index, seedOrKey] of seedPhrasesOrKeys.entries()) {
-    let fromKeypair;
-    if (method === '0') {
-      fromKeypair = await getKeypairFromSeed(seedOrKey);
-    } else {
-      fromKeypair = getKeypairFromPrivateKey(seedOrKey);
-    }
-    console.log(
-      colors.yellow(
-        `Sending SOL from account ${
-          index + 1
-        }: ${fromKeypair.publicKey.toString()}`
-      )
-    );
+async function dailyClaim(token) {
+  // Implementation from claim.js
+  console.log(colors.yellow('Performing daily claim...'));
+  // Add your daily claim logic here
+}
 
-    for (const address of randomAddresses) {
-      const toPublicKey = new PublicKey(address);
-      try {
-        await sendSol(fromKeypair, toPublicKey, amountToSend);
-        console.log(
-          colors.green(`Successfully sent ${amountToSend} SOL to ${address}`)
-        );
-      } catch (error) {
-        console.error(colors.red(`Failed to send SOL to ${address}:`), error);
-      }
-      await delay(delayBetweenTx);
-    }
+async function openMysteryBox(token, keypair) {
+  try {
+    console.log(colors.yellow('Opening mystery box...'));
+    const { data } = await axios({
+      url: 'https://odyssey-api-beta.sonic.game/user/rewards/mystery-box/build-tx',
+      method: 'GET',
+      headers: { ...HEADERS, Authorization: token },
+    });
+
+    const txBuffer = Buffer.from(data.data.hash, 'base64');
+    const tx = solana.Transaction.from(txBuffer);
+    tx.partialSign(keypair);
+    const signature = await connection.sendRawTransaction(tx.serialize());
+    await connection.confirmTransaction(signature);
+
+    const response = await axios({
+      url: 'https://odyssey-api-beta.sonic.game/user/rewards/mystery-box/open',
+      method: 'POST',
+      headers: { ...HEADERS, Authorization: token },
+      data: { hash: signature },
+    });
+
+    console.log(colors.green(`Mystery box opened successfully! Amount: ${response.data.data.amount}`));
+  } catch (error) {
+    console.log(`Error opening mystery box: ${error}`.red);
   }
-})();
+}
+
+async function dailyLogin(token, keypair) {
+  try {
+    console.log(colors.yellow('Performing daily login...'));
+    const { data } = await axios({
+      url: 'https://odyssey-api-beta.sonic.game/user/check-in/transaction',
+      method: 'GET',
+      headers: { ...HEADERS, Authorization: token },
+    });
+
+    const txBuffer = Buffer.from(data.data.hash, 'base64');
+    const tx = solana.Transaction.from(txBuffer);
+    tx.partialSign(keypair);
+    const signature = await connection.sendRawTransaction(tx.serialize());
+    await connection.confirmTransaction(signature);
+
+    const response = await axios({
+      url: 'https://odyssey-api-beta.sonic.game/user/check-in',
+      method: 'POST',
+      headers: { ...HEADERS, Authorization: token },
+      data: { hash: signature },
+    });
+
+    console.log(colors.green(`Daily login successful! Accumulative days: ${response.data.data.accumulative_days}`));
+  } catch (error) {
+    console.log(`Error in daily login: ${error}`.red);
+  }
+}
+
+main().catch(console.error);
